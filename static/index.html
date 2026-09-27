@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Vera — live console</title>
+<style>
+  :root {
+    --bg: #0b0d10; --panel: #14171c; --panel2: #1b1f26; --border: #262b33;
+    --text: #e8eaed; --muted: #8a919c; --accent: #6ee7b7; --accent2: #60a5fa;
+    --danger: #f87171; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  header h1 span { color: var(--accent); }
+  #status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; background: var(--muted); }
+  #status-dot.ok { background: var(--accent); }
+  #status-dot.bad { background: var(--danger); }
+  .pill { font-size: 12px; color: var(--muted); }
+  main { max-width: 1000px; margin: 0 auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px;
+  }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+    padding: 9px 14px; font-size: 13px; cursor: pointer; transition: border-color .15s, transform .05s;
+  }
+  button:hover { border-color: var(--accent2); }
+  button:active { transform: scale(0.98); }
+  button.primary { background: var(--accent); color: #06210f; border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  #log { font-size: 12px; color: var(--muted); min-height: 18px; }
+  #actions { display: flex; flex-direction: column; gap: 12px; }
+  .action {
+    border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel2); overflow: hidden;
+  }
+  .action .head {
+    padding: 10px 14px; display: flex; justify-content: space-between; gap: 8px; align-items: baseline;
+    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  .action .head .who { font-weight: 600; font-size: 13px; }
+  .action .head .kind { font-size: 11px; color: var(--accent2); font-family: ui-monospace, monospace; }
+  .bubble {
+    margin: 12px 14px 6px; padding: 10px 12px; border-radius: 12px; background: #223021; color: #dcfce7;
+    font-size: 13.5px; line-height: 1.45; white-space: pre-wrap; max-width: 88%;
+  }
+  .rationale { margin: 0 14px 12px; font-size: 11.5px; color: var(--muted); font-style: italic; }
+  .flag { margin: 0 14px 8px; font-size: 11.5px; color: var(--danger); }
+  .reply-row { display: flex; gap: 8px; padding: 0 14px 14px; }
+  .reply-row input {
+    flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text);
+    padding: 8px 10px; font-size: 13px;
+  }
+  .thread { display: flex; flex-direction: column; }
+  .bubble.inbound { background: #1c2733; color: #dbeafe; align-self: flex-end; margin-left: auto; }
+  .bubble.engine { }
+  select {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-size: 13px;
+  }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  code { color: var(--accent2); }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<header>
+  <h1><span>Vera</span> — live console</h1>
+  <div class="row">
+    <span class="pill"><span id="status-dot"></span><span id="status-text">connecting…</span></span>
+    <span class="pill" id="meta-text"></span>
+  </div>
+</header>
+
+<main>
+  <div class="card row">
+    <button id="seed-btn">1 · Seed dataset</button>
+    <button id="tick-btn" disabled>2 · Run tick</button>
+    <button id="teardown-btn">Reset state</button>
+    <span id="log"></span>
+  </div>
+
+  <div id="actions"></div>
+  <div class="empty" id="empty-msg">Seed the dataset, then run a tick to see Vera compose outreach.</div>
+</main>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const log = (msg, isErr) => { const el = $('#log'); el.textContent = msg; el.style.color = isErr ? 'var(--danger)' : 'var(--muted)'; };
+
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(`${path} → ${res.status}`);
+  return res.json();
+}
+
+async function refreshHealth() {
+  try {
+    const h = await api('/v1/healthz');
+    $('#status-dot').className = 'ok';
+    $('#status-text').textContent = `online · ${h.uptime_seconds}s uptime`;
+    const m = await api('/v1/metadata');
+    $('#meta-text').textContent = `${m.team_name} · ${m.model}`;
+  } catch (e) {
+    $('#status-dot').className = 'bad';
+    $('#status-text').textContent = 'offline';
+  }
+}
+
+function actionCard(action) {
+  const el = document.createElement('div');
+  el.className = 'action';
+  el.dataset.conv = action.conversation_id;
+  const flag = (action.rationale && /ungrounded|ambiguous|blocked/i.test(action.rationale))
+    ? `<div class="flag">⚠ ${action.rationale}</div>` : '';
+  el.innerHTML = `
+    <div class="head">
+      <span class="who">${action.merchant_id}${action.customer_id ? ' → ' + action.customer_id : ''}</span>
+      <span class="kind">${action.trigger_id}</span>
+    </div>
+    <div class="thread">
+      <div class="bubble engine">${escapeHtml(action.body)}</div>
+    </div>
+    ${!flag ? `<div class="rationale">${escapeHtml(action.rationale || '')}</div>` : flag}
+    <div class="reply-row">
+      <select class="role-select">
+        <option value="merchant">as merchant</option>
+        <option value="customer">as customer</option>
+      </select>
+      <input type="text" placeholder="Type a reply to send back to Vera…" />
+      <button class="send-reply">Send</button>
+    </div>`;
+  el.querySelector('.send-reply').addEventListener('click', () => sendReply(el, action));
+  el.querySelector('input').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendReply(el, action); });
+  return el;
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML;
+}
+
+async function sendReply(el, action) {
+  const input = el.querySelector('input');
+  const role = el.querySelector('.role-select').value;
+  const text = input.value.trim();
+  if (!text) return;
+  const thread = el.querySelector('.thread');
+  const inbound = document.createElement('div');
+  inbound.className = 'bubble inbound';
+  inbound.textContent = text;
+  thread.appendChild(inbound);
+  input.value = '';
+  input.disabled = true;
+  try {
+    const out = await api('/v1/reply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversation_id: action.conversation_id, merchant_id: action.merchant_id,
+        customer_id: action.customer_id, from_role: role, message: text,
+      }),
+    });
+    if (out.body) {
+      const b = document.createElement('div');
+      b.className = 'bubble engine';
+      b.textContent = out.body;
+      thread.appendChild(b);
+    }
+    if (out.rationale) {
+      const r = document.createElement('div');
+      r.className = 'rationale';
+      r.textContent = `[${out.action || 'reply'}] ${out.rationale}`;
+      thread.parentElement.insertBefore(r, thread.nextSibling);
+    }
+  } catch (e) {
+    log(`reply failed: ${e.message}`, true);
+  } finally {
+    input.disabled = false;
+  }
+}
+
+$('#seed-btn').addEventListener('click', async () => {
+  $('#seed-btn').disabled = true;
+  log('seeding…');
+  try {
+    const out = await api('/demo/seed', { method: 'POST' });
+    log(`loaded ${JSON.stringify(out.loaded)}`);
+    $('#tick-btn').disabled = false;
+  } catch (e) {
+    log(`seed failed: ${e.message}`, true);
+  } finally {
+    $('#seed-btn').disabled = false;
+  }
+});
+
+$('#tick-btn').addEventListener('click', async () => {
+  $('#tick-btn').disabled = true;
+  log('ticking…');
+  try {
+    const { triggers } = await api('/demo/triggers');
+    const ids = triggers.map(t => t.id);
+    const out = await api('/v1/tick', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ available_triggers: ids }),
+    });
+    const box = $('#actions');
+    box.innerHTML = '';
+    if (!out.actions.length) {
+      $('#empty-msg').textContent = 'Tick ran but produced no new actions (already sent, muted, or suppressed).';
+      $('#empty-msg').style.display = 'block';
+    } else {
+      $('#empty-msg').style.display = 'none';
+      out.actions.forEach(a => box.appendChild(actionCard(a)));
+    }
+    log(`tick produced ${out.actions.length} action(s) from ${ids.length} trigger(s)`);
+  } catch (e) {
+    log(`tick failed: ${e.message}`, true);
+  } finally {
+    $('#tick-btn').disabled = false;
+  }
+});
+
+$('#teardown-btn').addEventListener('click', async () => {
+  await api('/v1/teardown', { method: 'POST' });
+  $('#actions').innerHTML = '';
+  $('#empty-msg').style.display = 'block';
+  $('#empty-msg').textContent = 'State reset. Seed the dataset again to continue.';
+  $('#tick-btn').disabled = true;
+  log('state reset');
+});
+
+refreshHealth();
+setInterval(refreshHealth, 8000);
+</script>
+</body>
+</html>
